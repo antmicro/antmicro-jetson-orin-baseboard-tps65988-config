@@ -14,18 +14,10 @@ TPS65988-config repository contains python script which allows basic TPS65988 co
 ```
 pip3 install smbus2
 ```
-4. Change the permissions of the `/dev/i2c-1` device file on system with
+4. Run python script to flash configuration
 ```
-sudo chmod 666 /dev/i2c-1
+python3 TPS65988_config.py <json config path>
 ```
-5. Run python script to flash configuration
-```
-python3 TPS65988_config.py
-```
-
-
-## Project structure
-* `/.` -  contains the flashing script, config file, the licence and this readme file
 
 ## License
 The project is included under the [Apache 2.0](/LICENSE) license.
