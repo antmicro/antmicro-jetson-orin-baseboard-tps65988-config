@@ -31,51 +31,75 @@ def initialize_argparse():
 #    return [data[i:i + chunk_size] for i in range(0, len(data), chunk_size)]
 
 class TPS65988:
-
-    def __init__ (bus, i2c_addr1=0x23, i2c_addr2=0x27, debug_i2c=True):
+    def __init__ (self, bus, i2c_addr1=0x23, i2c_addr2=0x27, debug_i2c=True):
         self.bus       = bus
         self.i2c_addr  = i2c_addr1 # assume device 1 for 4CC
         self.i2c_addr1 = i2c_addr1
         self.i2c_addr2 = i2c_addr2
-        self.debug     = debug
+        self.debug_i2c     = debug_i2c
 
     def i2c_write (self, reg, data, debugname=""):
         dlength = len(data)
-        command =  f'i2ctransfer -y {self.bus} w{d_length+2}@0x{self.i2c_addr:x} {int(reg, 16):#02x}'
-        command += f' {int(dlength, 16):#02x} ' f' '.join(f'{byte:#02x}' for byte in data)
+        if isinstance(data,str):
+            data = [ord(d) for d in data]
+        command =  f'i2ctransfer -y {self.bus} w{dlength+2}@0x{self.i2c_addr:x} {reg:#02x}'
+        command += f' {dlength:#02x} '+f' '.join(f'{byte:#02x}' for byte in data)
         if self.debug_i2c: print (f'Write to {reg:#02x} {debugname} bytes: {dlength}')
         os.system(command)
+        #print (command)
 
-    def i2c_read (self, reg, debugname=""):
-        command =  f'i2ctransfer -y {self.bus} w1@0x{self.i2c_addr:x} {int(reg, 16):#02x} r?'  # or 256 ifnot supported
+    def i2c_read (self, reg, dlen=255, debugname=""):
+        dlen +=1 # accomodate for data length header
+        command =  f'i2ctransfer -y {self.bus} w1@0x{self.i2c_addr:x} {reg:#02x} r{dlen}'  # or 256 ifnot supported
         output = os.popen(command).read()
-        if self.debug_i2c: print (f'Read from to {reg:#02x} {debugname} bytes: {len(output)}')
-        if self.debug_i2c: print (output)
-        os.system(command)
+        output = output.rstrip("\r\n")
+        output = output.rpartition("\r")[2]
+        output = output.split()
+        output = [int(o,0) for o in output]
+        if self.debug_i2c: print (f'Read from to {reg:#02x} {debugname} bytes: {len(output)-1}/{output[0]}')
+        if self.debug_i2c: print (" ".join([hex(o) for o in output]))
+        return output
         # return parsed output
 
-    def command_4CC (self, command, data, timeout=1):
+    def command_4CC (self, command, data, outdatalen, timeout=1):
         cmd1_reg = 0x08 # protocol constant
         data_reg = 0x09 # protocol constant
         if len(data):
             self.i2c_write (data_reg, data, "DataX")
         self.i2c_write (cmd1_reg, command, "CMD1")
         timeout += time.time()
-        while time.time()<time:
+        holddebug = self.debug_i2c
+        self.debug_i2c = False
+        while time.time() < timeout:
             time.sleep(0.1)
-            self.i2c_read(command,"CMD1")
-        out_data = i2c_read (data_red, "DataX")
+            response = self.i2c_read (cmd1_reg, 4,"CMD1")
+            if response == [4, 0x21, 0x43, 0x4D, 0x44]:
+                print ("4CC command rejected")
+                self.debug_i2c = holddebug
+                return None
+            elif response == [4, 0, 0, 0, 0]:
+                print ("4CC ack")
+                self.debug_i2c = holddebug
+                return self.i2c_read (data_reg, outdatalen, "DataX")
+        print ("4CC timeout")
+        self.debug_i2c = holddebug
+        return None
 
     def check_status (self):
         print ("Check GSC - MSB(b15) should be 1")
-        i2c_read (0x27, "Global System Configuration")
+        self.i2c_read (0x27, 14, "Global System Configuration")
         print ("Check Boot Flags - b12,13 RegionCRCErr, b7,6 RegionHeaderErr, b3 - SPI present")
-        i2c_read (0x2D, "Boot Flags")
+        self.i2c_read (0x2D, 12, "Boot Flags")
         print ("Check FW Version")
-        i2c_read (0x0F, "FW Version")
+        self.i2c_read (0x0F, 4, "FW Version")
         
     def SimulateDisconnect (self):
-        command_4CC("DISC",[2],3)
+        print ('testing 4CC')
+        self.command_4CC("DISC",[2],1,3)
+
+    def Resume (self):
+        print ('testing 4CC')
+        self.command_4CC("Gaid",[2],1,3)
 
 if __name__ == "__main__":
     args = initialize_argparse()
@@ -90,9 +114,10 @@ if __name__ == "__main__":
 
     bus = SMBus(args.bus)
     time.sleep(0.2)
-    PDC = TPS65988 (bus, data, debug_i2c = args.verbose_i2c)
+    print ("> connecting")
+    PDC = TPS65988 (args.bus, debug_i2c = args.verbose_i2c)
     PDC.check_status()
-    PDC.SimulateDisconnect()
+    PDC.Resume()
     
 
     bus.close()
