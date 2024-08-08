@@ -19,24 +19,35 @@ import argparse
 from smbus2 import SMBus
 import time
 import os
+import struct
 
 def initialize_argparse():
     parser = argparse.ArgumentParser(description='Flash the PD Controller SPI flash via I2C.')
     parser.add_argument('--bus', type=int, default=0x1, help='I2C bus number')
-    parser.add_argument('-vi', '--verbose_i2c', action='store_true')
-    parser.add_argument('flash_bin', type=str, help='Binary image of the flash')
+    parser.add_argument('--dump', type=str, help='Dump flash content into a file')
+    parser.add_argument('--erase', action='store_true', help='Erase flash')
+    parser.add_argument('--write', type=str, help='Write flash with the binary image')
+    parser.add_argument('-vi', '--verbose_i2c', action='store_true',help='print I2C transactions')
+    parser.add_argument('-v4', '--verbose_4cc', action='store_true',help='print 4CC transactions')
     return parser.parse_args()
 
 #def split_data_into_chunks(data, chunk_size):
 #    return [data[i:i + chunk_size] for i in range(0, len(data), chunk_size)]
 
+def int32_to_bytes (x):
+    return list(struct.Struct('<I').pack (x & 0XFFFFFFFF))
+
+def lsbblock2hex (block):
+    return " ".join(["{:02x}".format(byte) for byte in block[::-1]])
+
 class TPS65988:
-    def __init__ (self, bus, i2c_addr1=0x23, i2c_addr2=0x27, debug_i2c=True):
+    def __init__ (self, bus, i2c_addr1=0x23, i2c_addr2=0x27, debug_i2c=True, debug_4cc=False):
         self.bus       = bus
         self.i2c_addr  = i2c_addr1 # assume device 1 for 4CC
         self.i2c_addr1 = i2c_addr1
         self.i2c_addr2 = i2c_addr2
         self.debug_i2c     = debug_i2c
+        self.debug_4cc     = debug_4cc
 
     def i2c_write (self, reg, data, debugname=""):
         dlength = len(data)
@@ -57,7 +68,7 @@ class TPS65988:
         output = output.split()
         output = [int(o,0) for o in output]
         if self.debug_i2c: print (f'Read from to {reg:#02x} {debugname} bytes: {len(output)-1}/{output[0]}')
-        if self.debug_i2c: print (" ".join([hex(o) for o in output]))
+        if self.debug_i2c: print (" ".join(["{:02x}".format(o) for o in output]))
         return output
         # return parsed output
 
@@ -71,55 +82,82 @@ class TPS65988:
         holddebug = self.debug_i2c
         self.debug_i2c = False
         while time.time() < timeout:
-            time.sleep(0.1)
             response = self.i2c_read (cmd1_reg, 4,"CMD1")
             if response == [4, 0x21, 0x43, 0x4D, 0x44]:
                 print ("4CC command rejected")
                 self.debug_i2c = holddebug
                 return None
             elif response == [4, 0, 0, 0, 0]:
-                print ("4CC ack")
+                if self.debug_4cc: print ("4CC Ack")
                 self.debug_i2c = holddebug
                 return self.i2c_read (data_reg, outdatalen, "DataX")
-        print ("4CC timeout")
+            #time.sleep(0.001)
+        print ("4CC Timeout")
         self.debug_i2c = holddebug
         return None
 
     def check_status (self):
         print ("Check GSC - MSB(b15) should be 1")
-        self.i2c_read (0x27, 14, "Global System Configuration")
+        out = self.i2c_read (0x27, 14, "Global System Configuration")
+        print (lsbblock2hex(out))
         print ("Check Boot Flags - b12,13 RegionCRCErr, b7,6 RegionHeaderErr, b3 - SPI present")
-        self.i2c_read (0x2D, 12, "Boot Flags")
+        out = self.i2c_read (0x2D, 12, "Boot Flags")
+        print (lsbblock2hex(out))
         print ("Check FW Version")
-        self.i2c_read (0x0F, 4, "FW Version")
+        out = self.i2c_read (0x0F, 4, "FW Version")
+        print (lsbblock2hex(out))
         
-    def SimulateDisconnect (self):
-        print ('testing 4CC')
+    def SimulateDisconnect4CC (self):
+        if self.debug_4cc: (f'4CC: simulate disconnect')
         self.command_4CC("DISC",[2],1,3)
 
-    def Resume (self):
-        print ('testing 4CC')
+    def Resume4CC (self):
+        if self.debug_4cc: (f'4CC: resume operation')
         self.command_4CC("Gaid",[2],1,3)
+
+    def FlashRead4CC (self, addr):
+        if self.debug_4cc: (f'Read from Flash {hex(addr)}')
+        dlen = 16
+        data = self.command_4CC("FLrd",int32_to_bytes(addr),dlen)
+        return bytearray(data[-dlen:])
 
 if __name__ == "__main__":
     args = initialize_argparse()
-
-    with open(args.flash_bin, 'rb') as file:
-        data = file.read
-    # as array
-    # from array import array
-    # data = array('B')
-    # with open('data/data0', 'rb') as f:
-    #    data.fromfile(f, 784000)
-
     bus = SMBus(args.bus)
     time.sleep(0.2)
-    print ("> connecting")
-    PDC = TPS65988 (args.bus, debug_i2c = args.verbose_i2c)
+    print ("Connecting to the TPS65988 chip")
+    PDC = TPS65988 (args.bus, debug_i2c = args.verbose_i2c, debug_4cc = args.verbose_4cc)
     PDC.check_status()
-    PDC.Resume()
+    #PDC.Resume4CC()
     
-
+    if args.dump:
+        print ("Performing 1MB memory dump")
+        memtop = 1024*1024
+        memidx = 0
+        memdump = []
+        while memidx<memtop:
+            if memidx % 0x1000 ==0: print (f'Read from Flash {hex(memidx)}', end="\r")
+            memdump.append(PDC.FlashRead4CC(memidx))
+            memidx+=16
+        print (f"{memtop} bytes read. Saving to {args.dump}")
+        with open(args.dump, "wb") as file:
+            for block in memdump:
+                file.write(block)
+        with open(args.dump+".txt", "w") as file:
+            for block in memdump:
+                block = " ".join(["{:02x}".format(byte) for byte in block]) + "\n"
+                file.write(block)
+    if args.erase:
+        pass
+    if args.write:
+        with open(args.write, 'rb') as file:
+            data = file.read
+            pass
+        # as array
+        # from array import array
+        # data = array('B')
+        # with open('data/data0', 'rb') as f:
+        #    data.fromfile(f, 784000)
     bus.close()
     #print("The PD Controller has been flashed successfully")
 
