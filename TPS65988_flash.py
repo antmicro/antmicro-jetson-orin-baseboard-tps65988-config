@@ -27,6 +27,7 @@ def initialize_argparse():
     parser.add_argument('--dump', type=str, help='Dump flash content into a file')
     parser.add_argument('--erase', action='store_true', help='Erase flash')
     parser.add_argument('--write', type=str, help='Write flash with the binary image')
+    parser.add_argument('--truncate', type=int, help='Limit R/W operation to TRUNCATE bytes')
     parser.add_argument('-vi', '--verbose_i2c', action='store_true',help='print I2C transactions')
     parser.add_argument('-v4', '--verbose_4cc', action='store_true',help='print 4CC transactions')
     return parser.parse_args()
@@ -39,6 +40,10 @@ def int32_to_bytes (x):
 
 def lsbblock2hex (block):
     return " ".join(["{:02x}".format(byte) for byte in block[::-1]])
+
+def block2hex (block):
+    return " ".join(["{:02x}".format(byte) for byte in block])
+
 
 class TPS65988:
     def __init__ (self, bus, i2c_addr1=0x23, i2c_addr2=0x27, debug_i2c=True, debug_4cc=False):
@@ -121,6 +126,17 @@ class TPS65988:
         data = self.command_4CC("FLrd",int32_to_bytes(addr),dlen)
         return bytearray(data[-dlen:])
 
+    def FlashErase4CC (self, addr,sectors):
+        if self.debug_4cc: print(f'Erase Flash from {hex(addr)} -> {sectors}*4K')
+        code = self.command_4CC("FLem",int32_to_bytes(addr)+[sectors&0xFF],1)
+        return code
+
+    def FlashWrite4CC (self, addr, data):
+        if self.debug_4cc: (f'Write Flash: {len(data)} bytes at {hex(addr)}')
+        codec = self.command_4CC("FLad",int32_to_bytes(addr),1)
+        coded = self.command_4CC("FLwd",data,1)
+        return coded
+
 if __name__ == "__main__":
     args = initialize_argparse()
     bus = SMBus(args.bus)
@@ -133,6 +149,7 @@ if __name__ == "__main__":
     if args.dump:
         print ("Performing 1MB memory dump")
         memtop = 1024*1024
+        if args.truncate: memtop = min(memtop, args.truncate)
         memidx = 0
         memdump = []
         while memidx<memtop:
@@ -145,19 +162,27 @@ if __name__ == "__main__":
                 file.write(block)
         with open(args.dump+".txt", "w") as file:
             for block in memdump:
-                block = " ".join(["{:02x}".format(byte) for byte in block]) + "\n"
+                block = block2hex(block) + "\n"
                 file.write(block)
     if args.erase:
-        pass
+        print ("Performing 1MB flash memory ERASE")
+        sectors = int (1024 / 4)
+        data = PDC.FlashErase4CC(0,sectors)
+        print (f"Returned code: {block2hex(data)}")
     if args.write:
         with open(args.write, 'rb') as file:
-            data = file.read
-            pass
-        # as array
-        # from array import array
-        # data = array('B')
-        # with open('data/data0', 'rb') as f:
-        #    data.fromfile(f, 784000)
+            data = file.read()
+        print ("Performing 1MB memory WRITE")
+        memtop = 1024*1024
+        if args.truncate: memtop = min(memtop, args.truncate)
+        memidx = 0
+        memdump = []
+        while memidx<memtop:
+            # if memidx % 0x1000 ==0: print (f'WRITE Flash {hex(memidx)}', end="\r")
+            code = PDC.FlashWrite4CC (memidx, data[memidx:memidx+64])
+            memidx+=64
+            print (f"Write at {hex(memidx)}, returned code: {block2hex(code)}")
+        print (f"Write completed {memtop} bytes written")
     bus.close()
     #print("The PD Controller has been flashed successfully")
 
