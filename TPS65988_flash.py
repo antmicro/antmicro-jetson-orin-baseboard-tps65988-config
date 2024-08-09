@@ -56,33 +56,19 @@ class TPS65988:
         dlength = len(data)
         if isinstance(data,str):
             data = [ord(d) for d in data]
-        command =  f'i2ctransfer -y {self.bus_no} w{dlength+2}@0x{self.i2c_addr:x} {reg:#02x}'
-        command += f' {dlength:#02x} '+f' '.join(f'{byte:#02x}' for byte in data)
         if self.debug_i2c: print (f'Write to {reg:#02x} {debugname} bytes: {dlength}')
-        #os.system(command)
-        msg = smbus2.i2c_msg.write(self.i2c_addr, [dlength&0xFF]+list(data))
+        msg = smbus2.i2c_msg.write(self.i2c_addr, [reg&0xFF, dlength&0xFF] + list(data))
         self.bus.i2c_rdwr(msg)
-        #print (command)
 
     def i2c_read (self, reg, dlen=255, debugname=""):
         dlen +=1 # accomodate for data length header
-        command =  f'i2ctransfer -y {self.bus_no} w1@0x{self.i2c_addr:x} {reg:#02x} r{dlen}'  # or 256 ifnot supported
-        #output = os.popen(command).read()
-        #output = output.rstrip("\r\n")
-        #output = output.rpartition("\r")[2]
-        #output = output.split()
-        #output = [int(o,0) for o in output]
-        
         msgw = smbus2.i2c_msg.write(self.i2c_addr,[reg])
         msg = smbus2.i2c_msg.read(self.i2c_addr,dlen)
         self.bus.i2c_rdwr(msgw,msg)
         output = list(msg)
-
-        
         if self.debug_i2c: print (f'Read from to {reg:#02x} {debugname} bytes: {len(output)-1}/{output[0]}')
         if self.debug_i2c: print (" ".join(["{:02x}".format(o) for o in output]))
         return output
-        # return parsed output
 
     def command_4CC (self, command, data, outdatalen, timeout=1):
         cmd1_reg = 0x08 # protocol constant
@@ -157,9 +143,9 @@ if __name__ == "__main__":
     #PDC.Resume4CC()
     
     if args.dump:
-        print ("Performing 1MB memory dump")
         memtop = 1024*1024
         if args.truncate: memtop = min(memtop, args.truncate*1024)
+        print ("Performing {int(memtop)/1024}KB memory dump")
         memidx = 0
         memdump = []
         while memidx<memtop:
@@ -176,9 +162,9 @@ if __name__ == "__main__":
                 file.write(block)
 
     if args.erase:
-        print ("Performing 1MB flash memory ERASE")
         memtop = 1024*1024
-        sectors = int (1024 / 4)
+        print ("Performing {int(memtop)/1024}KB memory ERASE")
+        sectors = int (memtop / (4*1024))
         addr = 0 
         data = PDC.FlashErase4CC(addr,int(sectors/2))
         PDC.Print4CCRCode (data,f"Erase {hex(addr)}")
@@ -189,9 +175,9 @@ if __name__ == "__main__":
     if args.write:
         with open(args.write, 'rb') as file:
             data = file.read()
-        print ("Performing 1MB memory WRITE")
         memtop = 1024*1024
         if args.truncate: memtop = min(memtop, args.truncate*1024)
+        print ("Performing {int(memtop)/1024}KB memory WRITE")
         memidx = 0
         memdump = []
         success = True
