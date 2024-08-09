@@ -176,6 +176,9 @@ if __name__ == "__main__":
         addr = int(memtop/2)
         data = PDC.FlashErase4CC(addr,int(sectors/2))
         PDC.Print4CCRCode (data,f"Erase {hex(addr)}")
+        print ("Performing cold reset")
+        code = PDC.ColdReset4CC()
+        time.sleep(1)
 
     if args.write:
         with open(args.write, 'rb') as file:
