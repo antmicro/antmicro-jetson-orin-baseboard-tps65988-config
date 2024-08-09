@@ -128,7 +128,7 @@ class TPS65988:
 
     def FlashErase4CC (self, addr,sectors):
         if self.debug_4cc: print(f'Erase Flash from {hex(addr)} -> {sectors}*4K')
-        code = self.command_4CC("FLem",int32_to_bytes(addr)+[sectors&0xFF],1)
+        code = self.command_4CC("FLem",int32_to_bytes(addr)+[sectors&0xFF],1,10)
         return code
 
     def FlashWrite4CC (self, addr, data):
@@ -166,8 +166,10 @@ if __name__ == "__main__":
                 file.write(block)
     if args.erase:
         print ("Performing 1MB flash memory ERASE")
+        memtop = 1024*1024
         sectors = int (1024 / 4)
-        data = PDC.FlashErase4CC(0,sectors)
+        data = PDC.FlashErase4CC(0,int(sectors/2))
+        data = PDC.FlashErase4CC(int(memtop/2),int(sectors/2))
         print (f"Returned code: {block2hex(data)}")
     if args.write:
         with open(args.write, 'rb') as file:
