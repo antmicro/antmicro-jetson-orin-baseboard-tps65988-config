@@ -16,7 +16,7 @@
 
 # import json
 import argparse
-from smbus2 import SMBus
+import smbus2
 import time
 import os
 import struct
@@ -27,13 +27,10 @@ def initialize_argparse():
     parser.add_argument('--dump', type=str, help='Dump flash content into a file')
     parser.add_argument('--erase', action='store_true', help='Erase flash')
     parser.add_argument('--write', type=str, help='Write flash with the binary image')
-    parser.add_argument('--truncate', type=int, help='Limit R/W operation to TRUNCATE bytes')
+    parser.add_argument('--truncate', type=int, help='Limit R/W operation to TRUNCATE Kbytes')
     parser.add_argument('-vi', '--verbose_i2c', action='store_true',help='print I2C transactions')
     parser.add_argument('-v4', '--verbose_4cc', action='store_true',help='print 4CC transactions')
     return parser.parse_args()
-
-#def split_data_into_chunks(data, chunk_size):
-#    return [data[i:i + chunk_size] for i in range(0, len(data), chunk_size)]
 
 def int32_to_bytes (x):
     return list(struct.Struct('<I').pack (x & 0XFFFFFFFF))
@@ -46,8 +43,9 @@ def block2hex (block):
 
 
 class TPS65988:
-    def __init__ (self, bus, i2c_addr1=0x23, i2c_addr2=0x27, debug_i2c=True, debug_4cc=False):
-        self.bus       = bus
+    def __init__ (self, bus_no, i2c_addr1=0x23, i2c_addr2=0x27, debug_i2c=True, debug_4cc=False):
+        self.bus_no    = bus_no
+        self.bus       = smbus2.SMBus(bus_no)
         self.i2c_addr  = i2c_addr1 # assume device 1 for 4CC
         self.i2c_addr1 = i2c_addr1
         self.i2c_addr2 = i2c_addr2
@@ -58,20 +56,29 @@ class TPS65988:
         dlength = len(data)
         if isinstance(data,str):
             data = [ord(d) for d in data]
-        command =  f'i2ctransfer -y {self.bus} w{dlength+2}@0x{self.i2c_addr:x} {reg:#02x}'
+        command =  f'i2ctransfer -y {self.bus_no} w{dlength+2}@0x{self.i2c_addr:x} {reg:#02x}'
         command += f' {dlength:#02x} '+f' '.join(f'{byte:#02x}' for byte in data)
         if self.debug_i2c: print (f'Write to {reg:#02x} {debugname} bytes: {dlength}')
-        os.system(command)
+        #os.system(command)
+        msg = smbus2.i2c_msg.write(self.i2c_addr, [dlength&0xFF]+list(data))
+        self.bus.i2c_rdwr(msg)
         #print (command)
 
     def i2c_read (self, reg, dlen=255, debugname=""):
         dlen +=1 # accomodate for data length header
-        command =  f'i2ctransfer -y {self.bus} w1@0x{self.i2c_addr:x} {reg:#02x} r{dlen}'  # or 256 ifnot supported
-        output = os.popen(command).read()
-        output = output.rstrip("\r\n")
-        output = output.rpartition("\r")[2]
-        output = output.split()
-        output = [int(o,0) for o in output]
+        command =  f'i2ctransfer -y {self.bus_no} w1@0x{self.i2c_addr:x} {reg:#02x} r{dlen}'  # or 256 ifnot supported
+        #output = os.popen(command).read()
+        #output = output.rstrip("\r\n")
+        #output = output.rpartition("\r")[2]
+        #output = output.split()
+        #output = [int(o,0) for o in output]
+        
+        msgw = smbus2.i2c_msg.write(self.i2c_addr,[reg])
+        msg = smbus2.i2c_msg.read(self.i2c_addr,dlen)
+        self.bus.i2c_rdwr(msgw,msg)
+        output = list(msg)
+
+        
         if self.debug_i2c: print (f'Read from to {reg:#02x} {debugname} bytes: {len(output)-1}/{output[0]}')
         if self.debug_i2c: print (" ".join(["{:02x}".format(o) for o in output]))
         return output
@@ -102,10 +109,10 @@ class TPS65988:
         return None
 
     def check_status (self):
-        print ("Check GSC - MSB(b15) should be 1")
+        print ("Check GSC - (MSB.b15 - flash access locked)")
         out = self.i2c_read (0x27, 14, "Global System Configuration")
         print (lsbblock2hex(out))
-        print ("Check Boot Flags - b12,13 RegionCRCErr, b7,6 RegionHeaderErr, b3 - SPI present")
+        print ("Check Boot Flags - (b12,13 RegionCRCErr) (b7,6 RegionHeaderErr) (b3 - SPI present)")
         out = self.i2c_read (0x2D, 12, "Boot Flags")
         print (lsbblock2hex(out))
         print ("Check FW Version")
@@ -137,9 +144,12 @@ class TPS65988:
         coded = self.command_4CC("FLwd",data,1)
         return coded
 
+    def Print4CCRCode (self, code, prefix=""):
+        res = "OK" if code == [0x40,00] else "Returned code: "+block2hex(code)
+        print (res)
+
 if __name__ == "__main__":
     args = initialize_argparse()
-    bus = SMBus(args.bus)
     time.sleep(0.2)
     print ("Connecting to the TPS65988 chip")
     PDC = TPS65988 (args.bus, debug_i2c = args.verbose_i2c, debug_4cc = args.verbose_4cc)
@@ -149,7 +159,7 @@ if __name__ == "__main__":
     if args.dump:
         print ("Performing 1MB memory dump")
         memtop = 1024*1024
-        if args.truncate: memtop = min(memtop, args.truncate)
+        if args.truncate: memtop = min(memtop, args.truncate*1024)
         memidx = 0
         memdump = []
         while memidx<memtop:
@@ -164,27 +174,38 @@ if __name__ == "__main__":
             for block in memdump:
                 block = block2hex(block) + "\n"
                 file.write(block)
+
     if args.erase:
         print ("Performing 1MB flash memory ERASE")
         memtop = 1024*1024
         sectors = int (1024 / 4)
-        data = PDC.FlashErase4CC(0,int(sectors/2))
-        data = PDC.FlashErase4CC(int(memtop/2),int(sectors/2))
-        print (f"Returned code: {block2hex(data)}")
+        addr = 0 
+        data = PDC.FlashErase4CC(addr,int(sectors/2))
+        PDC.Print4CCRCode (data,f"Erase {hex(addr)}")
+        addr = int(memtop/2)
+        data = PDC.FlashErase4CC(addr,int(sectors/2))
+        PDC.Print4CCRCode (data,f"Erase {hex(addr)}")
+
     if args.write:
         with open(args.write, 'rb') as file:
             data = file.read()
         print ("Performing 1MB memory WRITE")
         memtop = 1024*1024
-        if args.truncate: memtop = min(memtop, args.truncate)
+        if args.truncate: memtop = min(memtop, args.truncate*1024)
         memidx = 0
         memdump = []
+        success = True
         while memidx<memtop:
-            # if memidx % 0x1000 ==0: print (f'WRITE Flash {hex(memidx)}', end="\r")
+            if memidx % 0x1000 ==0: print (f'WRITE Flash {hex(memidx)}', end="\r")
             code = PDC.FlashWrite4CC (memidx, data[memidx:memidx+64])
+            if not code == [0x40,0]:
+                DC.Print4CCRCode (data,f"Write {hex(memidx)}")
+                success = False
             memidx+=64
-            print (f"Write at {hex(memidx)}, returned code: {block2hex(code)}")
         print (f"Write completed {memtop} bytes written")
-    bus.close()
-    #print("The PD Controller has been flashed successfully")
+        if success:
+            print("The PD Controller has been flashed successfully")
+        else:
+            print("There were some 4CC error codes")
+    PDC.bus.close()
 
