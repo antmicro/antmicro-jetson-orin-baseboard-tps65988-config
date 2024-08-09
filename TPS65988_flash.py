@@ -89,7 +89,6 @@ class TPS65988:
                 if self.debug_4cc: print ("4CC Ack")
                 self.debug_i2c = holddebug
                 return self.i2c_read (data_reg, outdatalen, "DataX")
-            #time.sleep(0.001)
         print ("4CC Timeout")
         self.debug_i2c = holddebug
         return None
@@ -111,7 +110,11 @@ class TPS65988:
 
     def Resume4CC (self):
         if self.debug_4cc: (f'4CC: resume operation')
-        self.command_4CC("Gaid",[2],1,3)
+        self.command_4CC("Gaid",[],1,3)
+
+    def ColdReset4CC (self):
+        if self.debug_4cc: (f'4CC: cold reset')
+        self.command_4CC("GAID",[],1,1)
 
     def FlashRead4CC (self, addr):
         if self.debug_4cc: (f'Read from Flash {hex(addr)}')
@@ -149,7 +152,9 @@ if __name__ == "__main__":
         memidx = 0
         memdump = []
         while memidx<memtop:
-            if memidx % 0x1000 ==0: print (f'Read from Flash {hex(memidx)}', end="\r")
+            if memidx % 0x1000 ==0:
+                percent = int(memidx *100 / memtop)
+                print (f'Read from Flash {percent:02d}% - {hex(memidx)}', end="\r")
             memdump.append(PDC.FlashRead4CC(memidx))
             memidx+=16
         print (f"{memtop} bytes read. Saving to {args.dump}")
@@ -175,14 +180,17 @@ if __name__ == "__main__":
     if args.write:
         with open(args.write, 'rb') as file:
             data = file.read()
-        memtop = 1024*1024
+        data = list(data) + [0]*(len(data)%64) # padding
+        memtop = min(1024*1024, len(data))
         if args.truncate: memtop = min(memtop, args.truncate*1024)
         print ("Performing {int(memtop)/1024}KB memory WRITE")
         memidx = 0
         memdump = []
         success = True
         while memidx<memtop:
-            if memidx % 0x1000 ==0: print (f'WRITE Flash {hex(memidx)}', end="\r")
+            if memidx % 0x1000 ==0:
+                percent = int(memidx *100 / memtop)
+                print (f'WRITE Flash {percent:02d}% - {hex(memidx)}', end="\r")
             code = PDC.FlashWrite4CC (memidx, data[memidx:memidx+64])
             if not code == [0x40,0]:
                 DC.Print4CCRCode (data,f"Write {hex(memidx)}")
