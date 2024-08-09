@@ -89,7 +89,7 @@ class TPS65988:
                 if self.debug_4cc: print ("4CC Ack")
                 self.debug_i2c = holddebug
                 return self.i2c_read (data_reg, outdatalen, "DataX")
-        print ("4CC Timeout")
+        if outdatalen > 0: print ("4CC Timeout")
         self.debug_i2c = holddebug
         return None
 
@@ -110,11 +110,11 @@ class TPS65988:
 
     def Resume4CC (self):
         if self.debug_4cc: (f'4CC: resume operation')
-        self.command_4CC("Gaid",[],1,3)
+        self.command_4CC("Gaid",[],0,0)
 
     def ColdReset4CC (self):
         if self.debug_4cc: (f'4CC: cold reset')
-        self.command_4CC("GAID",[],1,1)
+        self.command_4CC("GAID",[],0,0)
 
     def FlashRead4CC (self, addr):
         if self.debug_4cc: (f'Read from Flash {hex(addr)}')
@@ -148,7 +148,7 @@ if __name__ == "__main__":
     if args.dump:
         memtop = 1024*1024
         if args.truncate: memtop = min(memtop, args.truncate*1024)
-        print ("Performing {int(memtop)/1024}KB memory dump")
+        print (f"Performing {int(memtop/1024)}KB memory dump")
         memidx = 0
         memdump = []
         while memidx<memtop:
@@ -168,7 +168,7 @@ if __name__ == "__main__":
 
     if args.erase:
         memtop = 1024*1024
-        print ("Performing {int(memtop)/1024}KB memory ERASE")
+        print (f"Performing {int(memtop/1024)}KB memory ERASE")
         sectors = int (memtop / (4*1024))
         addr = 0 
         data = PDC.FlashErase4CC(addr,int(sectors/2))
@@ -183,7 +183,7 @@ if __name__ == "__main__":
         data = list(data) + [0]*(len(data)%64) # padding
         memtop = min(1024*1024, len(data))
         if args.truncate: memtop = min(memtop, args.truncate*1024)
-        print ("Performing {int(memtop)/1024}KB memory WRITE")
+        print (f"Performing {int(memtop/1024)}KB memory WRITE")
         memidx = 0
         memdump = []
         success = True
@@ -193,7 +193,7 @@ if __name__ == "__main__":
                 print (f'WRITE Flash {percent:02d}% - {hex(memidx)}', end="\r")
             code = PDC.FlashWrite4CC (memidx, data[memidx:memidx+64])
             if not code == [0x40,0]:
-                DC.Print4CCRCode (data,f"Write {hex(memidx)}")
+                PDC.Print4CCRCode (data,f"Write {hex(memidx)}")
                 success = False
             memidx+=64
         print (f"Write completed {memtop} bytes written")
@@ -201,5 +201,7 @@ if __name__ == "__main__":
             print("The PD Controller has been flashed successfully")
         else:
             print("There were some 4CC error codes")
+        print ("Performing cold reset")
+        code = PDC.ColdReset4CC()
     PDC.bus.close()
 
