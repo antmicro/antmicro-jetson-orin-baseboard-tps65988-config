@@ -178,7 +178,7 @@ if __name__ == "__main__":
         PDC.Print4CCRCode (data,f"Erase {hex(addr)}")
         print ("Performing cold reset")
         code = PDC.ColdReset4CC()
-        time.sleep(1)
+        time.sleep(5)
 
     if args.write:
         with open(args.write, 'rb') as file:
