@@ -29,6 +29,8 @@ def initialize_argparse():
     parser.add_argument("--erase", action="store_true", help="Erase flash")
     parser.add_argument("--write", type=str, help="Write flash with the binary image")
     parser.add_argument("--truncate", type=int, help="Limit R/W operation to TRUNCATE Kbytes")
+    parser.add_argument("--force", action="store_true", help="Force write flash with the binary image")
+    parser.add_argument("--debug_flash_config", action="store_true", help="Debug attempt of flash configuration loading")
     parser.add_argument("-vi", "--verbose_i2c", action="store_true", help="print I2C transactions")
     parser.add_argument("-v4", "--verbose_4cc", action="store_true", help="print 4CC transactions")
     return parser.parse_args()
@@ -44,6 +46,10 @@ def lsbblock2hex(block):
 
 def block2hex(block):
     return " ".join(["{:02x}".format(byte) for byte in block])
+
+
+def is_bit_set(byte, bit_index):
+    return (byte & (1 << bit_index)) != 0
 
 
 class TPS65988:
@@ -160,6 +166,51 @@ class TPS65988:
         res = "OK" if code == success_code else "Returned code: " + block2hex(code)
         print(res)
 
+    def IsConfigured(self, debug_mode_enabled = False):
+        boot_flags_register_read_byte_count = 2
+        boot_flags_register_value = self.i2c_read(0x2D, boot_flags_register_read_byte_count)
+        config_bytes = boot_flags_register_value[1:]
+
+        spi_flash_present = is_bit_set(config_bytes[0], 3)
+
+        region0_read_attempt = is_bit_set(config_bytes[0], 4)
+        region1_read_attempt = is_bit_set(config_bytes[0], 5)
+
+        region0_header_invalid = is_bit_set(config_bytes[0], 6)
+        region1_header_invalid = is_bit_set(config_bytes[0], 7)
+
+        region0_read_invalid = is_bit_set(config_bytes[1], 0)
+        region1_read_invalid = is_bit_set(config_bytes[1], 1)
+
+        patch_download_error = is_bit_set(config_bytes[1], 2)
+
+        region0_crc_fail = is_bit_set(config_bytes[1], 4)
+        region1_crc_fail = is_bit_set(config_bytes[1], 5)
+
+        if debug_mode_enabled:
+            print(f"SPI flash present: {spi_flash_present}")
+
+            print(f"Region 0 read attempt: {region0_read_attempt}")
+            print(f"Region 0 header invalid: {region0_header_invalid}")
+            print(f"Region 0 CRC fail: {region0_crc_fail}")
+
+            print(f"Region 1 read attempt: {region1_read_attempt}")
+            print(f"Region 1 header invalid: {region1_header_invalid}")
+            print(f"Region 1 CRC fail: {region1_crc_fail}")
+
+            print(f"Patch download occurred: {patch_download_error}")
+
+        if not spi_flash_present:
+            return False
+
+        if region0_read_attempt and (region0_header_invalid or region0_read_invalid or region0_crc_fail):
+            return False
+
+        if region1_read_attempt and (region1_header_invalid or region1_read_invalid or region1_crc_fail):
+            return False
+
+        return not patch_download_error
+
 
 if __name__ == "__main__":
     args = initialize_argparse()
@@ -168,6 +219,10 @@ if __name__ == "__main__":
     PDC = TPS65988(args.bus, debug_i2c = args.verbose_i2c, debug_4cc = args.verbose_4cc)
     PDC.check_status()
     # PDC.Resume4CC()
+
+    if args.debug_flash_config:
+        postfix_when_invalid = (" not", "")[PDC.IsConfigured(args.debug_flash_config)]
+        print(f"TPS65988 flash configuration is{postfix_when_invalid} valid.")
 
     if args.dump:
         memtop = 1024 * 1024
@@ -206,32 +261,35 @@ if __name__ == "__main__":
         time.sleep(5)
 
     if args.write:
-        with open(args.write, "rb") as file:
-            data = file.read()
-        data = list(data) + [0] * (len(data) % 64)  # padding
-        memtop = min(1024 * 1024, len(data))
-        if args.truncate:
-            memtop = min(memtop, args.truncate * 1024)
-        print(f"Writing {int(memtop / 1024)}KB to flash memory...")
-        memidx = 0
-        memdump = []
-        success = True
-        flash_write_successfull_code = [0x40, 0]
-        while memidx < memtop:
-            if memidx % 0x1000 == 0:
-                percent = int(memidx * 100 / memtop)
-                print(f"Writing flash {percent:02d}% - {hex(memidx)}", end="\r")
-            code = PDC.FlashWrite4CC(memidx, data[memidx : memidx + 64])
-            if not code == flash_write_successfull_code:
-                PDC.Print4CCRCode(data, f"Write {hex(memidx)}")
-                success = False
-            memidx += 64
-        print(f"Write completed {memtop} bytes written")
-        if success:
-            print("The PD Controller has been flashed successfully")
+        if not args.force and PDC.IsConfigured():
+            print("TPS65988 is already configured. Aborting...")
         else:
-            print("Flashing PD Controller failed.")
-        print("Performing cold reset")
-        code = PDC.ColdReset4CC()
+            with open(args.write, "rb") as file:
+                data = file.read()
+            data = list(data) + [0] * (len(data) % 64)  # padding
+            memtop = min(1024 * 1024, len(data))
+            if args.truncate:
+                memtop = min(memtop, args.truncate * 1024)
+            print(f"Writing {int(memtop / 1024)}KB to flash memory...")
+            memidx = 0
+            memdump = []
+            success = True
+            flash_write_successfull_code = [0x40, 0]
+            while memidx < memtop:
+                if memidx % 0x1000 == 0:
+                    percent = int(memidx * 100 / memtop)
+                    print(f"Writing flash {percent:02d}% - {hex(memidx)}", end="\r")
+                code = PDC.FlashWrite4CC(memidx, data[memidx : memidx + 64])
+                if not code == flash_write_successfull_code:
+                    PDC.Print4CCRCode(data, f"Write {hex(memidx)}")
+                    success = False
+                memidx += 64
+            print(f"Write completed {memtop} bytes written")
+            if success:
+                print("The PD Controller has been flashed successfully")
+            else:
+                print("Flashing PD Controller failed.")
+            print("Performing cold reset")
+            code = PDC.ColdReset4CC()
 
     PDC.bus.close()
