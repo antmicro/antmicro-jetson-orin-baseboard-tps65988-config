@@ -20,6 +20,7 @@ import smbus2
 import time
 import os
 import struct
+import register_definitions
 
 
 def initialize_argparse():
@@ -84,18 +85,16 @@ class TPS65988:
         return output
 
     def command_4CC(self, command, data, outdatalen, timeout = 1):
-        cmd1_reg = 0x08 # protocol constant
-        data_reg = 0x09 # protocol constant
         if len(data):
-            self.i2c_write(data_reg, data, "DataX")
-        self.i2c_write(cmd1_reg, command, "CMD1")
+            self.i2c_write(register_definitions.data1.address, data, register_definitions.data1.name)
+        self.i2c_write(register_definitions.command1.address, command, register_definitions.command1.name)
         timeout += time.time()
         holddebug = self.debug_i2c
         self.debug_i2c = False
         successfull_reponse = [4, 0, 0, 0, 0]
         unrecognized_command_response = [4, 0x21, 0x43, 0x4D, 0x44]
         while time.time() < timeout:
-            response = self.i2c_read(cmd1_reg, 4, "CMD1")
+            response = self.i2c_read(register_definitions.command1.address, register_definitions.command1.size, register_definitions.command1.name)
             if response == unrecognized_command_response:
                 print("4CC command rejected")
                 self.debug_i2c = holddebug
@@ -104,7 +103,7 @@ class TPS65988:
                 if self.debug_4cc:
                     print("4CC Ack")
                 self.debug_i2c = holddebug
-                return self.i2c_read(data_reg, outdatalen, "DataX")
+                return self.i2c_read(register_definitions.data1.address, outdatalen, register_definitions.data1.name)
         if outdatalen > 0:
             print("4CC Timeout")
         self.debug_i2c = holddebug
@@ -112,13 +111,13 @@ class TPS65988:
 
     def check_status(self):
         print("Check GSC - (MSB.b15 - flash access locked)")
-        out = self.i2c_read(0x27, 14, "Global System Configuration")
+        out = self.i2c_read(register_definitions.global_system_configuration.address, register_definitions.global_system_configuration.size, register_definitions.global_system_configuration.name)
         print(lsbblock2hex(out))
         print("Check Boot Flags - (b12,13 RegionCRCErr) (b7,6 RegionHeaderErr) (b3 - SPI present)")
-        out = self.i2c_read(0x2D, 12, "Boot Flags")
+        out = self.i2c_read(register_definitions.boot_flags.address, register_definitions.boot_flags.size, register_definitions.boot_flags.name)
         print(lsbblock2hex(out))
         print("Check FW Version")
-        out = self.i2c_read(0x0F, 4, "FW Version")
+        out = self.i2c_read(register_definitions.firmware_version.address, register_definitions.firmware_version.size, register_definitions.firmware_version.name)
         print(lsbblock2hex(out))
 
     def SimulateDisconnect4CC(self):
@@ -168,7 +167,7 @@ class TPS65988:
 
     def IsConfigured(self, debug_mode_enabled = False):
         boot_flags_register_read_byte_count = 2
-        boot_flags_register_value = self.i2c_read(0x2D, boot_flags_register_read_byte_count)
+        boot_flags_register_value = self.i2c_read(register_definitions.boot_flags.address, boot_flags_register_read_byte_count)
         config_bytes = boot_flags_register_value[1:]
 
         spi_flash_present = is_bit_set(config_bytes[0], 3)
