@@ -18,9 +18,9 @@
 import argparse
 import smbus2
 import time
-import os
 import struct
 import register_definitions
+import ft230x
 
 
 def initialize_argparse():
@@ -31,6 +31,7 @@ def initialize_argparse():
     parser.add_argument("--write", type=str, help="Write flash with the binary image")
     parser.add_argument("--truncate", type=int, help="Limit R/W operation to TRUNCATE Kbytes")
     parser.add_argument("--force", action="store_true", help="Force write flash with the binary image")
+    parser.add_argument("--ft230x", action="store_true", help="Use FT230X for flashing instead of internal I2C Bus")
     parser.add_argument("--debug_flash_config", action="store_true", help="Debug attempt of flash configuration loading")
     parser.add_argument("-vi", "--verbose_i2c", action="store_true", help="print I2C transactions")
     parser.add_argument("-v4", "--verbose_4cc", action="store_true", help="print 4CC transactions")
@@ -54,30 +55,59 @@ def is_bit_set(byte, bit_index):
 
 
 class TPS65988:
-    def __init__(self, bus_no, i2c_addr1 = 0x23, i2c_addr2 = 0x27, debug_i2c = True, debug_4cc = False):
+    def __init__(self, bus_no, i2c_addr1 = 0x23, i2c_addr2 = 0x27, use_ft230x = False, debug_i2c = True, debug_4cc = False):
         self.bus_no = bus_no
-        self.bus = smbus2.SMBus(bus_no)
+        self.use_ft230x = use_ft230x
         self.i2c_addr = i2c_addr1  # assume device 1 for 4CC
         self.i2c_addr1 = i2c_addr1
         self.i2c_addr2 = i2c_addr2
         self.debug_i2c = debug_i2c
-        self.debug_4cc = debug_4cc
-
+        self.debug_4cc = debug_4cc   
+        
+        if not use_ft230x:
+            try:
+                # Try to initialize using smbus2            
+                self.bus = smbus2.SMBus(bus_no)
+            except Exception:
+                print("Claiming Internal I2C bus failed")
+                exit()
+        else:
+            try:
+                # Try to connect to FT230X   
+                self.bus = ft230x.cbusBitBang(ftdi_addr = "ftdi://ftdi/1", i2c_debug = self.debug_i2c)
+            except Exception as e:               
+                print(e)
+                print("Connecting to the FT230X failed")
+                exit()
+            
+               
     def i2c_write(self, reg, data, debugname = ""):
         dlength = len(data)
         if isinstance(data, str):
             data = [ord(d) for d in data]
         if self.debug_i2c:
             print(f"Write to {reg:#02x} {debugname} bytes: {dlength}")
-        msg = smbus2.i2c_msg.write(self.i2c_addr, [reg & 0xFF, dlength & 0xFF] + list(data))
-        self.bus.i2c_rdwr(msg)
+
+        if self.use_ft230x:
+            msg = self.bus.write_block_to_i2c(self.i2c_addr,reg,[dlength & 0xFF]+ list(data))
+        else:    
+            msg = smbus2.i2c_msg.write(self.i2c_addr, [reg & 0xFF, dlength & 0xFF] + list(data))
+            self.bus.i2c_rdwr(msg)
 
     def i2c_read(self, reg, dlen = 255, debugname = ""):
         dlen += 1  # accomodate for data length header
-        msgw = smbus2.i2c_msg.write(self.i2c_addr, [reg])
-        msg = smbus2.i2c_msg.read(self.i2c_addr, dlen)
-        self.bus.i2c_rdwr(msgw, msg)
-        output = list(msg)
+
+        if self.use_ft230x:
+            msg = self.bus.read_block_from_i2c(self.i2c_addr,reg,dlen)
+        else:    
+            msgw = smbus2.i2c_msg.write(self.i2c_addr, [reg])
+            msg = smbus2.i2c_msg.read(self.i2c_addr, dlen)
+            self.bus.i2c_rdwr(msgw, msg)
+            
+        if msg != -1:
+            output = list(msg)
+        else:
+            raise ValueError("Device unresponsive")
         if self.debug_i2c:
             print(f"Read from to {reg:#02x} {debugname} bytes: {len(output) - 1} / {output[0]}")
         if self.debug_i2c:
@@ -163,7 +193,13 @@ class TPS65988:
     def Print4CCRCode(self, code, prefix = ""):
         success_code = [0x40, 00]
         res = "OK" if code == success_code else "Returned code: " + block2hex(code)
-        print(res)
+        
+        if len(res) > 100:
+            with open("4CCRCode.txt", "a") as file:
+                file.write(res)
+            print("4CCRCode is longer than 100 characters and has been dumped into '4CCRCode.txt'.")
+        else:
+            print(res)
 
     def IsConfigured(self, debug_mode_enabled = False):
         boot_flags_register_read_byte_count = 2
@@ -214,8 +250,8 @@ class TPS65988:
 if __name__ == "__main__":
     args = initialize_argparse()
     time.sleep(0.2)
-    print("Connecting to the TPS65988 chip")
-    PDC = TPS65988(args.bus, debug_i2c = args.verbose_i2c, debug_4cc = args.verbose_4cc)
+    print("Connecting to the TPS65988 chip...")
+    PDC = TPS65988(args.bus, use_ft230x = args.ft230x ,debug_i2c = args.verbose_i2c, debug_4cc = args.verbose_4cc)
     PDC.check_status()
     # PDC.Resume4CC()
 
@@ -274,11 +310,13 @@ if __name__ == "__main__":
             memdump = []
             success = True
             flash_write_successfull_code = [0x40, 0]
+
             while memidx < memtop:
-                if memidx % 0x1000 == 0:
+                if memidx % 0x100 == 0:
                     percent = int(memidx * 100 / memtop)
-                    print(f"Writing flash {percent:02d}% - {hex(memidx)}", end="\r")
-                code = PDC.FlashWrite4CC(memidx, data[memidx : memidx + 64])
+                    print(f"Writing flash {percent:02d}% - {hex(memidx)}", end="\r")                   
+                if len([x for x in data[memidx : memidx + 64] if x<0xFF]):
+                    code = PDC.FlashWrite4CC(memidx, data[memidx : memidx + 64])
                 if not code == flash_write_successfull_code:
                     PDC.Print4CCRCode(data, f"Write {hex(memidx)}")
                     success = False
